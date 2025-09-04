@@ -41,6 +41,736 @@
 </head>
   <body class="bg-gray-100">
     <div id="root"></div>
-    <script type="module" src="/index.tsx"></script>
+    <script type="module">
+import React, { useState, useEffect, useRef, useMemo } from 'react';
+import ReactDOM from 'react-dom/client';
+import SignatureCanvas from 'react-signature-canvas';
+
+// --- Types ---
+const UserRole = {
+    TEACHER: 'TEACHER',
+    ADMIN: 'ADMIN',
+};
+const LeaveStatus = {
+    PENDING: 'PENDING',
+    APPROVED: 'APPROVED',
+    REJECTED: 'REJECTED',
+};
+const LeaveDuration = {
+    FULL_DAY: 'FULL_DAY',
+    MORNING: 'MORNING',
+    AFTERNOON: 'AFTERNOON',
+};
+
+// --- Services ---
+// apiService.ts
+const SCRIPT_URL = 'https://script.google.com/macros/s/AKfycbypT6i66GpRS548GpRZ4Jy1IBOTKf4wmZGvsNl-AnBKaJoti2MAM0b8jC4v7VF3kexE/exec';
+const apiCall = async (action, payload) => {
+    try {
+        const res = await fetch(SCRIPT_URL, {
+            method: 'POST',
+            mode: 'cors',
+            headers: {
+                'Content-Type': 'text/plain;charset=utf-8',
+            },
+            body: JSON.stringify({ action, payload }),
+            redirect: 'follow',
+        });
+        const result = await res.json();
+        if (!result.success) {
+            throw new Error(result.message || 'เกิดข้อผิดพลาดในการสื่อสารกับเซิร์ฟเวอร์');
+        }
+        return result;
+    }
+    catch (error) {
+        console.error(`API Error (${action}):`, error);
+        throw error;
+    }
+};
+const getInitialData = async () => {
+    const result = await apiCall('getInitialData');
+    return result.data;
+};
+const login = async (userId, password) => {
+    const result = await apiCall('login', { userId, password });
+    return result.user;
+};
+const createLeaveRequest = async (request) => {
+    const result = await apiCall('createLeave', request);
+    return result.data;
+};
+const updateLeaveRequest = async (request) => {
+    const result = await apiCall('updateLeave', request);
+    return result.data;
+};
+const deleteLeaveRequest = async (id) => {
+    const result = await apiCall('deleteLeave', { id });
+    return result;
+};
+// pdfService.ts
+const generatePdf = async (elementId, fileName) => {
+    const input = document.getElementById(elementId);
+    if (!input) {
+        console.error(`Element with id ${elementId} not found.`);
+        alert('ไม่สามารถสร้าง PDF ได้: ไม่พบองค์ประกอบที่ต้องการ');
+        return;
+    }
+    // @ts-ignore
+    const { jsPDF } = window.jspdf;
+    try {
+        // @ts-ignore
+        const canvas = await html2canvas(input, {
+            scale: 2,
+            useCORS: true,
+        });
+        const imgData = canvas.toDataURL('image/png');
+        const pdf = new jsPDF({
+            orientation: 'p',
+            unit: 'mm',
+            format: 'a4',
+        });
+        const pdfWidth = pdf.internal.pageSize.getWidth();
+        const pdfHeight = pdf.internal.pageSize.getHeight();
+        const canvasWidth = canvas.width;
+        const canvasHeight = canvas.height;
+        const ratio = canvasWidth / canvasHeight;
+        let imgWidth = pdfWidth - 20; // with margin
+        let imgHeight = imgWidth / ratio;
+        if (imgHeight > pdfHeight - 20) {
+            imgHeight = pdfHeight - 20;
+            imgWidth = imgHeight * ratio;
+        }
+        const x = (pdfWidth - imgWidth) / 2;
+        const y = 10; // top margin
+        pdf.addImage(imgData, 'PNG', x, y, imgWidth, imgHeight);
+        pdf.save(`${fileName}.pdf`);
+    }
+    catch (error) {
+        console.error("Error generating PDF:", error);
+        alert('เกิดข้อผิดพลาดในการสร้างไฟล์ PDF');
+    }
+};
+
+// --- Components ---
+const Header = ({ currentUser, onLogout }) => {
+    return (React.createElement("header", { className: "bg-white shadow-md" },
+        React.createElement("div", { className: "container mx-auto px-4 sm:px-6 lg:px-8" },
+            React.createElement("div", { className: "flex items-center justify-between h-20" },
+                React.createElement("div", { className: "flex items-center" },
+                    React.createElement("img", { src: "https://kuruchon.github.io/logo_256.png", alt: "Logo \u0E42\u0E23\u0E07\u0E40\u0E23\u0E35\u0E22\u0E19\u0E04\u0E38\u0E23\u0E38\u0E0A\u0E19\u0E1E\u0E31\u0E12\u0E19\u0E32", className: "w-12 h-12" }),
+                    React.createElement("h1", { className: "text-xl md:text-2xl font-bold text-gray-800 ml-3" },
+                        "\u0E23\u0E30\u0E1A\u0E1A\u0E43\u0E1A\u0E25\u0E32\u0E2D\u0E2D\u0E19\u0E44\u0E25\u0E19\u0E4C",
+                        React.createElement("span", { className: "hidden sm:inline" }, " - \u0E42\u0E23\u0E07\u0E40\u0E23\u0E35\u0E22\u0E19\u0E04\u0E38\u0E23\u0E38\u0E0A\u0E19\u0E1E\u0E31\u0E12\u0E19\u0E32"))),
+                React.createElement("div", { className: "flex items-center space-x-4" },
+                    React.createElement("div", { className: "text-right" },
+                        React.createElement("p", { className: "font-semibold text-gray-800" }, currentUser.name),
+                        React.createElement("p", { className: "text-sm text-gray-500" }, currentUser.role === 'ADMIN' ? 'ผู้บริหาร' : 'ครู')),
+                    React.createElement("button", { onClick: onLogout, className: "px-4 py-2 bg-red-500 text-white font-semibold rounded-lg shadow-sm hover:bg-red-600 focus:outline-none focus:ring-2 focus:ring-red-500 focus:ring-opacity-75 flex items-center", title: "\u0E2D\u0E2D\u0E01\u0E08\u0E32\u0E01\u0E23\u0E30\u0E1A\u0E1A" },
+                        React.createElement("svg", { xmlns: "http://www.w3.org/2000/svg", fill: "none", viewBox: "0 0 24 24", strokeWidth: 1.5, stroke: "currentColor", className: "w-5 h-5 sm:mr-2" },
+                            React.createElement("path", { strokeLinecap: "round", strokeLinejoin: "round", d: "M15.75 9V5.25A2.25 2.25 0 0013.5 3h-6a2.25 2.25 0 00-2.25 2.25v13.5A2.25 2.25 0 007.5 21h6a2.25 2.25 0 002.25-2.25V15m3 0l3-3m0 0l-3-3m3 3H9" })),
+                        React.createElement("span", { className: "hidden sm:inline" }, "\u0E2D\u0E2D\u0E01\u0E08\u0E32\u0E01\u0E23\u0E30\u0E1A\u0E1A")))))));
+};
+const Login = ({ users, onLogin, isLoading, error }) => {
+    const [selectedUserId, setSelectedUserId] = useState(users.length > 0 ? users[0].id : '');
+    const [password, setPassword] = useState('');
+    const handleLogin = (e) => {
+        e.preventDefault();
+        if (!selectedUserId || !password)
+            return;
+        onLogin(selectedUserId, password);
+    };
+    return (React.createElement("div", { className: "min-h-screen bg-gray-100 flex flex-col justify-center items-center p-4" },
+        React.createElement("div", { className: "max-w-md w-full bg-white rounded-xl shadow-2xl p-8 space-y-6" },
+            React.createElement("div", { className: "text-center" },
+                React.createElement("img", { src: "https://kuruchon.github.io/logo_256.png", alt: "Logo", className: "w-24 h-24 mx-auto mb-4" }),
+                React.createElement("h1", { className: "text-3xl font-bold text-gray-800" }, "\u0E23\u0E30\u0E1A\u0E1A\u0E43\u0E1A\u0E25\u0E32\u0E2D\u0E2D\u0E19\u0E44\u0E25\u0E19\u0E4C"),
+                React.createElement("p", { className: "text-gray-600 mt-1" }, "\u0E42\u0E23\u0E07\u0E40\u0E23\u0E35\u0E22\u0E19\u0E04\u0E38\u0E23\u0E38\u0E0A\u0E19\u0E1E\u0E31\u0E12\u0E19\u0E32")),
+            React.createElement("form", { className: "space-y-4", onSubmit: handleLogin },
+                React.createElement("div", null,
+                    React.createElement("label", { htmlFor: "user-select", className: "block text-sm font-medium text-gray-700" }, "\u0E0A\u0E37\u0E48\u0E2D\u0E1C\u0E39\u0E49\u0E43\u0E0A\u0E49\u0E07\u0E32\u0E19"),
+                    React.createElement("select", { id: "user-select", value: selectedUserId, onChange: (e) => setSelectedUserId(e.target.value), disabled: isLoading || users.length === 0, className: "mt-1 block w-full pl-3 pr-10 py-3 text-base border-gray-300 focus:outline-none focus:ring-blue-500 focus:border-blue-500 sm:text-sm rounded-md shadow-sm" }, users.map(user => (React.createElement("option", { key: user.id, value: user.id },
+                        user.name,
+                        " (",
+                        user.role === 'ADMIN' ? 'ผู้บริหาร' : 'ครู',
+                        ")"))))),
+                React.createElement("div", null,
+                    React.createElement("label", { htmlFor: "password", className: "block text-sm font-medium text-gray-700" }, "\u0E23\u0E2B\u0E31\u0E2A\u0E1C\u0E48\u0E32\u0E19"),
+                    React.createElement("input", { type: "password", id: "password", value: password, onChange: (e) => setPassword(e.target.value), disabled: isLoading, className: "mt-1 block w-full px-3 py-3 border border-gray-300 rounded-md shadow-sm placeholder-gray-400 focus:outline-none focus:ring-blue-500 focus:border-blue-500 sm:text-sm", placeholder: "\u0E01\u0E23\u0E2D\u0E01\u0E23\u0E2B\u0E31\u0E2A\u0E1C\u0E48\u0E32\u0E19", required: true })),
+                error && React.createElement("p", { className: "text-sm text-red-600 text-center" }, error),
+                React.createElement("div", null,
+                    React.createElement("button", { type: "submit", disabled: isLoading, className: "w-full flex justify-center py-3 px-4 border border-transparent rounded-md shadow-sm text-sm font-medium text-white bg-blue-600 hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500 disabled:bg-blue-300 disabled:cursor-not-allowed" }, isLoading ? 'กำลังตรวจสอบ...' : 'เข้าสู่ระบบ'))))));
+};
+const LeaveRequestDetails = ({ request, onClose, currentUser }) => {
+    const formatDate = (dateString) => {
+        return new Date(dateString).toLocaleDateString('th-TH', {
+            year: 'numeric', month: 'long', day: 'numeric',
+        });
+    };
+    const handleGeneratePdf = () => {
+        generatePdf('pdf-content', `ใบลา-${request.userName.replace(/\s/g, '_')}-${request.id}`);
+    };
+    const statusInfo = {
+        [LeaveStatus.PENDING]: { text: 'รออนุมัติ', color: 'text-yellow-600 bg-yellow-100' },
+        [LeaveStatus.APPROVED]: { text: 'อนุมัติแล้ว', color: 'text-green-600 bg-green-100' },
+        [LeaveStatus.REJECTED]: { text: 'ปฏิเสธ', color: 'text-red-600 bg-red-100' },
+    };
+    const getDurationText = () => {
+        switch (request.duration) {
+            case 'MORNING': return 'ครึ่งวัน (เช้า)';
+            case 'AFTERNOON': return 'ครึ่งวัน (บ่าย)';
+            default: return `${calculateLeaveDays(request.startDate, request.endDate)} วัน`;
+        }
+    };
+    const calculateLeaveDays = (start, end) => {
+        const startDate = new Date(start);
+        const endDate = new Date(end);
+        const diffTime = Math.abs(endDate.getTime() - startDate.getTime());
+        const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24)) + 1;
+        return diffDays;
+    };
+    return (React.createElement("div", { className: "fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4" },
+        React.createElement("div", { className: "bg-white rounded-lg shadow-2xl max-w-2xl w-full max-h-[90vh] flex flex-col" },
+            React.createElement("div", { className: "p-6 border-b flex justify-between items-center" },
+                React.createElement("h2", { className: "text-2xl font-bold text-gray-800" }, "\u0E23\u0E32\u0E22\u0E25\u0E30\u0E40\u0E2D\u0E35\u0E22\u0E14\u0E43\u0E1A\u0E25\u0E32"),
+                React.createElement("button", { onClick: onClose, className: "text-gray-500 hover:text-gray-800" },
+                    React.createElement("svg", { xmlns: "http://www.w3.org/2000/svg", fill: "none", viewBox: "0 0 24 24", strokeWidth: 1.5, stroke: "currentColor", className: "w-6 h-6" },
+                        React.createElement("path", { strokeLinecap: "round", strokeLinejoin: "round", d: "M6 18L18 6M6 6l12 12" })))),
+            React.createElement("div", { className: "p-6 overflow-y-auto", id: "pdf-content-wrapper" },
+                React.createElement("div", { className: "p-8 border border-gray-200", id: "pdf-content" },
+                    React.createElement("h3", { className: "text-center text-xl font-bold mb-2" }, "\u0E43\u0E1A\u0E25\u0E32\u0E42\u0E23\u0E07\u0E40\u0E23\u0E35\u0E22\u0E19\u0E04\u0E38\u0E23\u0E38\u0E0A\u0E19\u0E1E\u0E31\u0E12\u0E19\u0E32"),
+                    React.createElement("p", { className: "text-center text-sm text-gray-600 mb-6" }, "\u0E40\u0E02\u0E35\u0E22\u0E19\u0E17\u0E35\u0E48: \u0E42\u0E23\u0E07\u0E40\u0E23\u0E35\u0E22\u0E19\u0E04\u0E38\u0E23\u0E38\u0E0A\u0E19\u0E1E\u0E31\u0E12\u0E19\u0E32"),
+                    React.createElement("div", { className: "grid grid-cols-2 gap-x-8 gap-y-4 text-sm" },
+                        React.createElement("p", null,
+                            React.createElement("strong", null, "\u0E1C\u0E39\u0E49\u0E22\u0E37\u0E48\u0E19\u0E43\u0E1A\u0E25\u0E32:"),
+                            " ",
+                            request.userName),
+                        React.createElement("p", null,
+                            React.createElement("strong", null, "\u0E27\u0E31\u0E19\u0E17\u0E35\u0E48\u0E22\u0E37\u0E48\u0E19:"),
+                            " ",
+                            formatDate(request.submittedAt)),
+                        React.createElement("p", null,
+                            React.createElement("strong", null, "\u0E1B\u0E23\u0E30\u0E40\u0E20\u0E17\u0E01\u0E32\u0E23\u0E25\u0E32:"),
+                            " ",
+                            request.leaveType),
+                        React.createElement("div", { className: `px-3 py-1 text-sm font-medium inline-block rounded-full ${statusInfo[request.status].color}` },
+                            React.createElement("strong", null, "\u0E2A\u0E16\u0E32\u0E19\u0E30:"),
+                            " ",
+                            statusInfo[request.status].text),
+                        React.createElement("p", null,
+                            React.createElement("strong", null, "\u0E27\u0E31\u0E19\u0E17\u0E35\u0E48\u0E40\u0E23\u0E34\u0E48\u0E21\u0E25\u0E32:"),
+                            " ",
+                            formatDate(request.startDate)),
+                        React.createElement("p", null,
+                            React.createElement("strong", null, "\u0E27\u0E31\u0E19\u0E17\u0E35\u0E48\u0E2A\u0E34\u0E49\u0E19\u0E2A\u0E38\u0E14:"),
+                            " ",
+                            formatDate(request.endDate)),
+                        React.createElement("p", { className: "col-span-2" },
+                            React.createElement("strong", null, "\u0E23\u0E30\u0E22\u0E30\u0E40\u0E27\u0E25\u0E32:"),
+                            " ",
+                            getDurationText()),
+                        React.createElement("div", { className: "col-span-2" },
+                            React.createElement("strong", null, "\u0E40\u0E2B\u0E15\u0E38\u0E1C\u0E25\u0E01\u0E32\u0E23\u0E25\u0E32:"),
+                            React.createElement("p", { className: "mt-1 p-2 border rounded-md bg-gray-50 h-20" }, request.reason)),
+                        React.createElement("div", { className: "col-span-2" },
+                            React.createElement("strong", null, "\u0E25\u0E32\u0E22\u0E21\u0E37\u0E2D\u0E0A\u0E37\u0E48\u0E2D\u0E1C\u0E39\u0E49\u0E25\u0E32:"),
+                            React.createElement("div", { className: "mt-1 p-2 border rounded-md bg-gray-50 h-32 flex items-center justify-center" }, request.signature ? (React.createElement("img", { src: request.signature, alt: "\u0E25\u0E32\u0E22\u0E40\u0E0B\u0E47\u0E19", className: "max-h-full max-w-full" })) : (React.createElement("span", { className: "text-gray-400" }, "\u0E44\u0E21\u0E48\u0E21\u0E35\u0E25\u0E32\u0E22\u0E40\u0E0B\u0E47\u0E19")))),
+                        React.createElement("div", { className: "col-span-2 mt-4 pt-4 border-t" },
+                            React.createElement("p", { className: "font-semibold" }, "\u0E2A\u0E33\u0E2B\u0E23\u0E31\u0E1A\u0E1C\u0E39\u0E49\u0E1A\u0E23\u0E34\u0E2B\u0E32\u0E23:"),
+                            request.status === LeaveStatus.APPROVED ? (React.createElement(React.Fragment, null,
+                                React.createElement("p", { className: "mt-2" },
+                                    React.createElement("strong", null, "\u0E1C\u0E39\u0E49\u0E2D\u0E19\u0E38\u0E21\u0E31\u0E15\u0E34:"),
+                                    " ",
+                                    request.approvedBy),
+                                React.createElement("p", null,
+                                    React.createElement("strong", null, "\u0E27\u0E31\u0E19\u0E17\u0E35\u0E48\u0E2D\u0E19\u0E38\u0E21\u0E31\u0E15\u0E34:"),
+                                    " ",
+                                    formatDate(request.approvedAt)),
+                                React.createElement("div", { className: "mt-4" },
+                                    React.createElement("p", { className: "text-center" }, "...................................................."),
+                                    React.createElement("p", { className: "text-center" },
+                                        "(",
+                                        request.approvedBy,
+                                        ")"),
+                                    React.createElement("p", { className: "text-center" }, "\u0E1C\u0E39\u0E49\u0E2D\u0E19\u0E38\u0E21\u0E31\u0E15\u0E34")))) : (React.createElement("div", { className: "mt-8" },
+                                React.createElement("p", { className: "text-center" }, "...................................................."),
+                                React.createElement("p", { className: "text-center" }, "(....................................................)"),
+                                React.createElement("p", { className: "text-center" }, "\u0E1C\u0E39\u0E49\u0E2D\u0E19\u0E38\u0E21\u0E31\u0E15\u0E34")))))))),
+            React.createElement("div", { className: "p-6 border-t bg-gray-50 flex justify-end space-x-3" },
+                React.createElement("button", { type: "button", onClick: onClose, className: "px-4 py-2 bg-gray-200 text-gray-800 rounded-md hover:bg-gray-300 font-semibold" }, "\u0E1B\u0E34\u0E14"),
+                request.status === LeaveStatus.APPROVED && (React.createElement("button", { type: "button", onClick: handleGeneratePdf, className: "px-4 py-2 bg-blue-600 text-white rounded-md hover:bg-blue-700 font-semibold flex items-center" },
+                    React.createElement("svg", { xmlns: "http://www.w3.org/2000/svg", fill: "none", viewBox: "0 0 24 24", strokeWidth: 1.5, stroke: "currentColor", className: "w-5 h-5 mr-2" },
+                        React.createElement("path", { strokeLinecap: "round", strokeLinejoin: "round", d: "M3 16.5v2.25A2.25 2.25 0 005.25 21h13.5A2.25 2.25 0 0021 18.75V16.5M16.5 12L12 16.5m0 0L7.5 12m4.5 4.5V3" })),
+                    "\u0E14\u0E32\u0E27\u0E19\u0E4C\u0E42\u0E2B\u0E25\u0E14 PDF")))));
+};
+const LeaveRequestForm = ({ requestToEdit, currentUser, onSave, onClose, leaveTypes }) => {
+    const [leaveType, setLeaveType] = useState(requestToEdit?.leaveType || (leaveTypes.length > 0 ? leaveTypes[0] : ''));
+    const [startDate, setStartDate] = useState(requestToEdit?.startDate || new Date().toISOString().split('T')[0]);
+    const [endDate, setEndDate] = useState(requestToEdit?.endDate || new Date().toISOString().split('T')[0]);
+    const [duration, setDuration] = useState(requestToEdit?.duration || LeaveDuration.FULL_DAY);
+    const [reason, setReason] = useState(requestToEdit?.reason || '');
+    const [signature, setSignature] = useState(requestToEdit?.signature || '');
+    const [error, setError] = useState('');
+    const sigCanvas = useRef(null);
+    useEffect(() => {
+        if (requestToEdit) {
+            setLeaveType(requestToEdit.leaveType);
+            setStartDate(requestToEdit.startDate);
+            setEndDate(requestToEdit.endDate);
+            setDuration(requestToEdit.duration);
+            setReason(requestToEdit.reason);
+            setSignature(requestToEdit.signature);
+        }
+    }, [requestToEdit]);
+    const handleSave = () => {
+        const isSignatureEmpty = sigCanvas.current ? sigCanvas.current.isEmpty() : true;
+        const finalSignature = sigCanvas.current ? sigCanvas.current.toDataURL('image/png') : '';
+        if (!reason.trim()) {
+            setError('กรุณากรอกเหตุผลการลา');
+            return;
+        }
+        if (!requestToEdit && isSignatureEmpty) {
+            setError('กรุณาลงลายมือชื่อ');
+            return;
+        }
+        setError('');
+        const newRequest = {
+            id: requestToEdit?.id || `leave-${Date.now()}`,
+            userId: currentUser.id,
+            userName: currentUser.name,
+            leaveType,
+            startDate,
+            endDate: duration !== LeaveDuration.FULL_DAY ? startDate : endDate,
+            duration,
+            reason,
+            signature: !isSignatureEmpty ? finalSignature : signature,
+            status: requestToEdit?.status || LeaveStatus.PENDING,
+            submittedAt: requestToEdit?.submittedAt || new Date().toISOString(),
+        };
+        onSave(newRequest);
+    };
+    const clearSignature = () => {
+        sigCanvas.current?.clear();
+        setSignature('');
+    };
+    const handleDurationChange = (e) => {
+        const newDuration = e.target.value;
+        setDuration(newDuration);
+        if (newDuration !== LeaveDuration.FULL_DAY) {
+            setEndDate(startDate);
+        }
+    };
+    const handleStartDateChange = (e) => {
+        setStartDate(e.target.value);
+        if (duration !== LeaveDuration.FULL_DAY) {
+            setEndDate(e.target.value);
+        }
+        else if (new Date(e.target.value) > new Date(endDate)) {
+            setEndDate(e.target.value);
+        }
+    };
+    return (React.createElement("div", { className: "fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4" },
+        React.createElement("div", { className: "bg-white rounded-lg shadow-2xl max-w-2xl w-full max-h-[90vh] flex flex-col" },
+            React.createElement("div", { className: "p-6 border-b" },
+                React.createElement("h2", { className: "text-2xl font-bold text-gray-800" }, requestToEdit ? 'แก้ไขใบลา' : 'ยื่นใบลาใหม่')),
+            React.createElement("div", { className: "p-6 space-y-4 overflow-y-auto" },
+                React.createElement("div", { className: "grid grid-cols-1 md:grid-cols-2 gap-4" },
+                    React.createElement("div", null,
+                        React.createElement("label", { className: "block text-sm font-medium text-gray-700" }, "\u0E1B\u0E23\u0E30\u0E40\u0E20\u0E17\u0E01\u0E32\u0E23\u0E25\u0E32"),
+                        React.createElement("select", { value: leaveType, onChange: (e) => setLeaveType(e.target.value), className: "mt-1 block w-full border-gray-300 rounded-md shadow-sm focus:border-blue-500 focus:ring-blue-500" }, leaveTypes.map(type => React.createElement("option", { key: type, value: type }, type)))),
+                    React.createElement("div", null,
+                        React.createElement("label", { className: "block text-sm font-medium text-gray-700" }, "\u0E23\u0E30\u0E22\u0E30\u0E40\u0E27\u0E25\u0E32"),
+                        React.createElement("select", { value: duration, onChange: handleDurationChange, className: "mt-1 block w-full border-gray-300 rounded-md shadow-sm focus:border-blue-500 focus:ring-blue-500" },
+                            React.createElement("option", { value: LeaveDuration.FULL_DAY }, "\u0E40\u0E15\u0E47\u0E21\u0E27\u0E31\u0E19"),
+                            React.createElement("option", { value: LeaveDuration.MORNING }, "\u0E04\u0E23\u0E36\u0E48\u0E07\u0E27\u0E31\u0E19\u0E40\u0E0A\u0E49\u0E32"),
+                            React.createElement("option", { value: LeaveDuration.AFTERNOON }, "\u0E04\u0E23\u0E36\u0E48\u0E07\u0E27\u0E31\u0E19\u0E1A\u0E48\u0E32\u0E22")))),
+                React.createElement("div", { className: "grid grid-cols-1 md:grid-cols-2 gap-4" },
+                    React.createElement("div", null,
+                        React.createElement("label", { className: "block text-sm font-medium text-gray-700" }, "\u0E27\u0E31\u0E19\u0E17\u0E35\u0E48\u0E40\u0E23\u0E34\u0E48\u0E21\u0E25\u0E32"),
+                        React.createElement("input", { type: "date", value: startDate, onChange: handleStartDateChange, min: new Date().toISOString().split('T')[0], className: "mt-1 block w-full border-gray-300 rounded-md shadow-sm focus:border-blue-500 focus:ring-blue-500" })),
+                    duration === LeaveDuration.FULL_DAY && (React.createElement("div", null,
+                        React.createElement("label", { className: "block text-sm font-medium text-gray-700" }, "\u0E27\u0E31\u0E19\u0E17\u0E35\u0E48\u0E2A\u0E34\u0E49\u0E19\u0E2A\u0E38\u0E14"),
+                        React.createElement("input", { type: "date", value: endDate, onChange: (e) => setEndDate(e.target.value), min: startDate, className: "mt-1 block w-full border-gray-300 rounded-md shadow-sm focus:border-blue-500 focus:ring-blue-500" })))),
+                React.createElement("div", null,
+                    React.createElement("label", { className: "block text-sm font-medium text-gray-700" }, "\u0E40\u0E2B\u0E15\u0E38\u0E1C\u0E25\u0E01\u0E32\u0E23\u0E25\u0E32"),
+                    React.createElement("textarea", { value: reason, onChange: (e) => setReason(e.target.value), rows: 3, className: "mt-1 block w-full border-gray-300 rounded-md shadow-sm focus:border-blue-500 focus:ring-blue-500" })),
+                React.createElement("div", null,
+                    React.createElement("label", { className: "block text-sm font-medium text-gray-700" }, "\u0E25\u0E32\u0E22\u0E21\u0E37\u0E2D\u0E0A\u0E37\u0E48\u0E2D"),
+                    React.createElement("div", { className: "mt-1 border border-gray-300 rounded-md" },
+                        React.createElement(SignatureCanvas, { ref: sigCanvas, canvasProps: { className: 'w-full h-32 rounded-md' } })),
+                    React.createElement("button", { onClick: clearSignature, className: "text-sm text-blue-600 hover:underline mt-1" }, "\u0E25\u0E49\u0E32\u0E07\u0E25\u0E32\u0E22\u0E40\u0E0B\u0E47\u0E19")),
+                error && React.createElement("p", { className: "text-sm text-red-600" }, error)),
+            React.createElement("div", { className: "p-6 border-t bg-gray-50 flex justify-end space-x-3" },
+                React.createElement("button", { type: "button", onClick: onClose, className: "px-4 py-2 bg-gray-200 text-gray-800 rounded-md hover:bg-gray-300 font-semibold" }, "\u0E22\u0E01\u0E40\u0E25\u0E34\u0E01"),
+                React.createElement("button", { type: "button", onClick: handleSave, className: "px-4 py-2 bg-blue-600 text-white rounded-md hover:bg-blue-700 font-semibold" }, "\u0E1A\u0E31\u0E19\u0E17\u0E36\u0E01")))));
+};
+const SummaryCards = ({ requests, currentUser }) => {
+    const calculateLeaveDays = (start, end) => {
+        const startDate = new Date(start);
+        const endDate = new Date(end);
+        const diffTime = Math.abs(endDate.getTime() - startDate.getTime());
+        const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24)) + 1;
+        return diffDays;
+    };
+    const userRequests = currentUser.role === UserRole.TEACHER
+        ? requests.filter(r => r.userId === currentUser.id)
+        : requests;
+    const approvedLeaves = userRequests.filter(r => r.status === LeaveStatus.APPROVED);
+    const totalLeaveDays = approvedLeaves.reduce((total, req) => {
+        if (req.duration === LeaveDuration.FULL_DAY) {
+            return total + calculateLeaveDays(req.startDate, req.endDate);
+        }
+        return total + 0.5;
+    }, 0);
+    const pendingRequests = userRequests.filter(r => r.status === LeaveStatus.PENDING).length;
+    const approvedRequests = approvedLeaves.length;
+    const cards = [
+        { title: 'วันลาทั้งหมด (ที่อนุมัติ)', value: totalLeaveDays, icon: 'M8.25 6.75h7.5M8.25 12h7.5m-7.5 5.25h7.5M3.75 6.75h.007v.008H3.75V6.75zm.375 0a.375.375 0 11-.75 0 .375.375 0 01.75 0zM3.75 12h.007v.008H3.75V12zm.375 0a.375.375 0 11-.75 0 .375.375 0 01.75 0zm-.375 5.25h.007v.008H3.75V17.25zm.375 0a.375.375 0 11-.75 0 .375.375 0 01.75 0z', color: 'bg-blue-500' },
+        { title: 'รายการรออนุมัติ', value: pendingRequests, icon: 'M12 6v6h4.5m4.5 0a9 9 0 11-18 0 9 9 0 0118 0z', color: 'bg-yellow-500' },
+        { title: 'รายการอนุมัติแล้ว', value: approvedRequests, icon: 'M9 12.75L11.25 15 15 9.75M21 12a9 9 0 11-18 0 9 9 0 0118 0z', color: 'bg-green-500' },
+    ];
+    return (React.createElement("div", { className: "grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-6 mb-8" }, cards.map(card => (React.createElement("div", { key: card.title, className: "bg-white rounded-lg shadow-md p-6 flex items-center" },
+        React.createElement("div", { className: `${card.color} text-white rounded-full p-4` },
+            React.createElement("svg", { xmlns: "http://www.w3.org/2000/svg", fill: "none", viewBox: "0 0 24 24", strokeWidth: 1.5, stroke: "currentColor", className: "w-8 h-8" },
+                React.createElement("path", { strokeLinecap: "round", strokeLinejoin: "round", d: card.icon }))),
+        React.createElement("div", { className: "ml-6" },
+            React.createElement("p", { className: "text-sm font-medium text-gray-500" }, card.title),
+            React.createElement("p", { className: "text-3xl font-bold text-gray-800" }, card.value)))))));
+};
+const LeaveRequestList = ({ requests, currentUser, onView, onEdit, onDelete, onApprove }) => {
+    const userRequests = currentUser.role === UserRole.TEACHER
+        ? requests.filter(r => r.userId === currentUser.id)
+        : requests;
+    const formatDate = (dateString) => {
+        return new Date(dateString).toLocaleDateString('th-TH', { day: '2-digit', month: 'short', year: 'numeric' });
+    };
+    const statusInfo = {
+        [LeaveStatus.PENDING]: { text: 'รออนุมัติ', color: 'bg-yellow-100 text-yellow-800' },
+        [LeaveStatus.APPROVED]: { text: 'อนุมัติแล้ว', color: 'bg-green-100 text-green-800' },
+        [LeaveStatus.REJECTED]: { text: 'ปฏิเสธ', color: 'bg-red-100 text-red-800' },
+    };
+    return (React.createElement("div", { className: "bg-white rounded-lg shadow-md overflow-hidden" },
+        React.createElement("div", { className: "p-6 border-b" },
+            React.createElement("h2", { className: "text-xl font-bold text-gray-800" }, "\u0E23\u0E32\u0E22\u0E01\u0E32\u0E23\u0E43\u0E1A\u0E25\u0E32")),
+        React.createElement("div", { className: "overflow-x-auto" },
+            React.createElement("table", { className: "w-full min-w-max text-left text-sm text-gray-600" },
+                React.createElement("thead", { className: "bg-gray-50 border-b border-gray-200" },
+                    React.createElement("tr", null,
+                        currentUser.role === UserRole.ADMIN && React.createElement("th", { className: "px-6 py-3 font-medium" }, "\u0E0A\u0E37\u0E48\u0E2D\u0E1C\u0E39\u0E49\u0E25\u0E32"),
+                        React.createElement("th", { className: "px-6 py-3 font-medium" }, "\u0E1B\u0E23\u0E30\u0E40\u0E20\u0E17"),
+                        React.createElement("th", { className: "px-6 py-3 font-medium" }, "\u0E27\u0E31\u0E19\u0E17\u0E35\u0E48\u0E25\u0E32"),
+                        React.createElement("th", { className: "px-6 py-3 font-medium" }, "\u0E2A\u0E16\u0E32\u0E19\u0E30"),
+                        React.createElement("th", { className: "px-6 py-3 font-medium text-center" }, "\u0E08\u0E31\u0E14\u0E01\u0E32\u0E23"))),
+                React.createElement("tbody", null, userRequests.length === 0 ? (React.createElement("tr", null,
+                    React.createElement("td", { colSpan: currentUser.role === UserRole.ADMIN ? 5 : 4, className: "text-center py-10 text-gray-500" }, "\u0E44\u0E21\u0E48\u0E21\u0E35\u0E02\u0E49\u0E2D\u0E21\u0E39\u0E25\u0E43\u0E1A\u0E25\u0E32"))) : (userRequests.map(req => (React.createElement("tr", { key: req.id, className: "border-b hover:bg-gray-50" },
+                    currentUser.role === UserRole.ADMIN && React.createElement("td", { className: "px-6 py-4 font-medium text-gray-900" }, req.userName),
+                    React.createElement("td", { className: "px-6 py-4" }, req.leaveType),
+                    React.createElement("td", { className: "px-6 py-4" },
+                        formatDate(req.startDate),
+                        " - ",
+                        formatDate(req.endDate)),
+                    React.createElement("td", { className: "px-6 py-4" },
+                        React.createElement("span", { className: `px-2 py-1 text-xs font-semibold rounded-full ${statusInfo[req.status].color}` }, statusInfo[req.status].text)),
+                    React.createElement("td", { className: "px-6 py-4 text-center" },
+                        React.createElement("div", { className: "flex items-center justify-center space-x-2" },
+                            React.createElement("button", { onClick: () => onView(req), className: "text-blue-600 hover:text-blue-800", title: "\u0E14\u0E39\u0E23\u0E32\u0E22\u0E25\u0E30\u0E40\u0E2D\u0E35\u0E22\u0E14" },
+                                React.createElement("svg", { xmlns: "http://www.w3.org/2000/svg", fill: "none", viewBox: "0 0 24 24", strokeWidth: 1.5, stroke: "currentColor", className: "w-5 h-5" },
+                                    React.createElement("path", { strokeLinecap: "round", strokeLinejoin: "round", d: "M2.036 12.322a1.012 1.012 0 010-.639C3.423 7.51 7.36 4.5 12 4.5c4.638 0 8.573 3.007 9.963 7.178.07.207.07.432 0 .639C20.577 16.49 16.64 19.5 12 19.5c-4.638 0-8.573-3.007-9.963-7.178z" }),
+                                    React.createElement("path", { strokeLinecap: "round", strokeLinejoin: "round", d: "M15 12a3 3 0 11-6 0 3 3 0 016 0z" }))),
+                            (currentUser.role === UserRole.ADMIN || (currentUser.role === UserRole.TEACHER && req.status === LeaveStatus.PENDING)) && (React.createElement(React.Fragment, null,
+                                React.createElement("button", { onClick: () => onEdit(req), className: "text-yellow-600 hover:text-yellow-800", title: "\u0E41\u0E01\u0E49\u0E44\u0E02" },
+                                    React.createElement("svg", { xmlns: "http://www.w3.org/2000/svg", fill: "none", viewBox: "0 0 24 24", strokeWidth: 1.5, stroke: "currentColor", className: "w-5 h-5" },
+                                        React.createElement("path", { strokeLinecap: "round", strokeLinejoin: "round", d: "M16.862 4.487l1.687-1.688a1.875 1.875 0 112.652 2.652L10.582 16.07a4.5 4.5 0 01-1.897 1.13L6 18l.8-2.685a4.5 4.5 0 011.13-1.897l8.932-8.931zm0 0L19.5 7.125M18 14v4.75A2.25 2.25 0 0115.75 21H5.25A2.25 2.25 0 013 18.75V8.25A2.25 2.25 0 015.25 6H10" }))),
+                                React.createElement("button", { onClick: () => onDelete(req.id), className: "text-red-600 hover:text-red-800", title: "\u0E25\u0E1A" },
+                                    React.createElement("svg", { xmlns: "http://www.w3.org/2000/svg", fill: "none", viewBox: "0 0 24 24", strokeWidth: 1.5, stroke: "currentColor", className: "w-5 h-5" },
+                                        React.createElement("path", { strokeLinecap: "round", strokeLinejoin: "round", d: "M14.74 9l-.346 9m-4.788 0L9.26 9m9.968-3.21c.342.052.682.107 1.022.166m-1.022-.165L18.16 19.673a2.25 2.25 0 01-2.244 2.077H8.084a2.25 2.25 0 01-2.244-2.077L4.772 5.79m14.456 0a48.108 48.108 0 00-3.478-.397m-12 .562c.34-.059.68-.114 1.022-.165m0 0a48.11 48.11 0 013.478-.397m7.5 0v-.916c0-1.18-.91-2.124-2.09-2.201a51.964 51.964 0 00-3.32 0c-1.18.077-2.09.921-2.09 2.201v.916m7.5 0a48.667 48.667 0 00-7.5 0" })))),
+                            currentUser.role === UserRole.ADMIN && req.status === LeaveStatus.PENDING && (React.createElement("button", { onClick: () => onApprove(req.id), className: "text-green-600 hover:text-green-800", title: "\u0E2D\u0E19\u0E38\u0E21\u0E31\u0E15\u0E34" },
+                                React.createElement("svg", { xmlns: "http://www.w3.org/2000/svg", fill: "none", viewBox: "0 0 24 24", strokeWidth: 1.5, stroke: "currentColor", className: "w-5 h-5" },
+                                    React.createElement("path", { strokeLinecap: "round", strokeLinejoin: "round", d: "M9 12.75L11.25 15 15 9.75M21 12a9 9 0 11-18 0 9 9 0 0118 0z" }))))))))))))))));
+};
+const LeaveSummary = ({ requests, currentUser, onClose, leaveTypes }) => {
+    const calculateLeaveDays = (start, end, duration) => {
+        if (duration !== LeaveDuration.FULL_DAY)
+            return 0.5;
+        const startDate = new Date(start);
+        const endDate = new Date(end);
+        const diffTime = Math.abs(endDate.getTime() - startDate.getTime());
+        const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24)) + 1;
+        return diffDays;
+    };
+    const today = new Date();
+    const firstDayOfMonth = new Date(today.getFullYear(), today.getMonth(), 1).toISOString().split('T')[0];
+    const lastDayOfMonth = new Date(today.getFullYear(), today.getMonth() + 1, 0).toISOString().split('T')[0];
+    const [startDate, setStartDate] = useState(firstDayOfMonth);
+    const [endDate, setEndDate] = useState(lastDayOfMonth);
+    const [selectedLeaveType, setSelectedLeaveType] = useState('ALL');
+    const filteredRequests = useMemo(() => {
+        return requests.filter(req => {
+            const reqDate = new Date(req.startDate);
+            const start = new Date(startDate);
+            const end = new Date(endDate);
+            const isDateInRange = req.status === LeaveStatus.APPROVED && reqDate >= start && reqDate <= end;
+            const isCorrectLeaveType = selectedLeaveType === 'ALL' || req.leaveType === selectedLeaveType;
+            return isDateInRange && isCorrectLeaveType;
+        });
+    }, [requests, startDate, endDate, selectedLeaveType]);
+    const teacherSummary = useMemo(() => {
+        if (currentUser.role !== UserRole.TEACHER)
+            return null;
+        const userRequests = filteredRequests.filter(r => r.userId === currentUser.id);
+        const summary = {};
+        userRequests.forEach(req => {
+            const days = calculateLeaveDays(req.startDate, req.endDate, req.duration);
+            if (!summary[req.leaveType]) {
+                summary[req.leaveType] = { days: 0, count: 0 };
+            }
+            summary[req.leaveType].days += days;
+            summary[req.leaveType].count += 1;
+        });
+        return summary;
+    }, [filteredRequests, currentUser]);
+    const adminSummary = useMemo(() => {
+        if (currentUser.role !== UserRole.ADMIN)
+            return null;
+        const summary = {};
+        filteredRequests.forEach(req => {
+            if (!summary[req.userName]) {
+                summary[req.userName] = { details: {}, total: { days: 0, count: 0 } };
+            }
+            if (!summary[req.userName].details[req.leaveType]) {
+                summary[req.userName].details[req.leaveType] = { days: 0, count: 0 };
+            }
+            const days = calculateLeaveDays(req.startDate, req.endDate, req.duration);
+            summary[req.userName].details[req.leaveType].days += days;
+            summary[req.userName].details[req.leaveType].count += 1;
+            summary[req.userName].total.days += days;
+            summary[req.userName].total.count += 1;
+        });
+        return summary;
+    }, [filteredRequests, currentUser]);
+    return (React.createElement("div", { className: "fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4" },
+        React.createElement("div", { className: "bg-white rounded-lg shadow-2xl max-w-4xl w-full max-h-[90vh] flex flex-col" },
+            React.createElement("div", { className: "p-6 border-b flex justify-between items-center" },
+                React.createElement("h2", { className: "text-2xl font-bold text-gray-800" }, "\u0E2A\u0E23\u0E38\u0E1B\u0E02\u0E49\u0E2D\u0E21\u0E39\u0E25\u0E01\u0E32\u0E23\u0E25\u0E32"),
+                React.createElement("button", { onClick: onClose, className: "text-gray-500 hover:text-gray-800" },
+                    React.createElement("svg", { xmlns: "http://www.w3.org/2000/svg", fill: "none", viewBox: "0 0 24 24", strokeWidth: 1.5, stroke: "currentColor", className: "w-6 h-6" },
+                        React.createElement("path", { strokeLinecap: "round", strokeLinejoin: "round", d: "M6 18L18 6M6 6l12 12" })))),
+            React.createElement("div", { className: "p-6 space-y-4 overflow-y-auto" },
+                React.createElement("div", { className: "grid grid-cols-1 md:grid-cols-3 gap-4 p-4 bg-gray-50 rounded-lg border" },
+                    React.createElement("div", { className: "flex-1" },
+                        React.createElement("label", { className: "block text-sm font-medium text-gray-700" }, "\u0E15\u0E31\u0E49\u0E07\u0E41\u0E15\u0E48\u0E27\u0E31\u0E19\u0E17\u0E35\u0E48"),
+                        React.createElement("input", { type: "date", value: startDate, onChange: e => setStartDate(e.target.value), className: "mt-1 block w-full border-gray-300 rounded-md shadow-sm focus:border-blue-500 focus:ring-blue-500" })),
+                    React.createElement("div", { className: "flex-1" },
+                        React.createElement("label", { className: "block text-sm font-medium text-gray-700" }, "\u0E16\u0E36\u0E07\u0E27\u0E31\u0E19\u0E17\u0E35\u0E48"),
+                        React.createElement("input", { type: "date", value: endDate, onChange: e => setEndDate(e.target.value), min: startDate, className: "mt-1 block w-full border-gray-300 rounded-md shadow-sm focus:border-blue-500 focus:ring-blue-500" })),
+                    React.createElement("div", { className: "flex-1" },
+                        React.createElement("label", { className: "block text-sm font-medium text-gray-700" }, "\u0E1B\u0E23\u0E30\u0E40\u0E20\u0E17\u0E01\u0E32\u0E23\u0E25\u0E32"),
+                        React.createElement("select", { value: selectedLeaveType, onChange: e => setSelectedLeaveType(e.target.value), className: "mt-1 block w-full border-gray-300 rounded-md shadow-sm focus:border-blue-500 focus:ring-blue-500" },
+                            React.createElement("option", { value: "ALL" }, "\u0E17\u0E38\u0E01\u0E1B\u0E23\u0E30\u0E40\u0E20\u0E17"),
+                            leaveTypes.map(type => (React.createElement("option", { key: type, value: type }, type)))))),
+                teacherSummary && (React.createElement("div", { className: "mt-4" },
+                    React.createElement("h3", { className: "text-lg font-semibold mb-2" },
+                        "\u0E2A\u0E23\u0E38\u0E1B\u0E01\u0E32\u0E23\u0E25\u0E32\u0E02\u0E2D\u0E07\u0E04\u0E38\u0E13 (",
+                        currentUser.name,
+                        ")"),
+                    React.createElement("div", { className: "overflow-x-auto border rounded-lg" },
+                        React.createElement("table", { className: "w-full min-w-max text-left text-sm text-gray-600" },
+                            React.createElement("thead", { className: "bg-gray-100" },
+                                React.createElement("tr", null,
+                                    React.createElement("th", { className: "px-6 py-3 font-medium" }, "\u0E1B\u0E23\u0E30\u0E40\u0E20\u0E17\u0E01\u0E32\u0E23\u0E25\u0E32"),
+                                    React.createElement("th", { className: "px-6 py-3 font-medium text-right" }, "\u0E08\u0E33\u0E19\u0E27\u0E19\u0E04\u0E23\u0E31\u0E49\u0E07"),
+                                    React.createElement("th", { className: "px-6 py-3 font-medium text-right" }, "\u0E08\u0E33\u0E19\u0E27\u0E19\u0E27\u0E31\u0E19"))),
+                            React.createElement("tbody", null,
+                                Object.keys(teacherSummary).length > 0 ? Object.entries(teacherSummary).map(([type, stats]) => (React.createElement("tr", { key: type, className: "border-t" },
+                                    React.createElement("td", { className: "px-6 py-4" }, type),
+                                    React.createElement("td", { className: "px-6 py-4 text-right font-semibold" }, stats.count),
+                                    React.createElement("td", { className: "px-6 py-4 text-right font-semibold" }, stats.days)))) : (React.createElement("tr", null,
+                                    React.createElement("td", { colSpan: 3, className: "text-center py-4" }, "\u0E44\u0E21\u0E48\u0E21\u0E35\u0E02\u0E49\u0E2D\u0E21\u0E39\u0E25\u0E01\u0E32\u0E23\u0E25\u0E32\u0E43\u0E19\u0E0A\u0E48\u0E27\u0E07\u0E27\u0E31\u0E19\u0E17\u0E35\u0E48\u0E40\u0E25\u0E37\u0E2D\u0E01"))),
+                                React.createElement("tr", { className: "border-t bg-gray-50 font-bold" },
+                                    React.createElement("td", { className: "px-6 py-4" }, "\u0E23\u0E27\u0E21\u0E17\u0E31\u0E49\u0E07\u0E2B\u0E21\u0E14"),
+                                    React.createElement("td", { className: "px-6 py-4 text-right" }, Object.values(teacherSummary).reduce((acc, curr) => acc + curr.count, 0)),
+                                    React.createElement("td", { className: "px-6 py-4 text-right" }, Object.values(teacherSummary).reduce((acc, curr) => acc + curr.days, 0)))))))),
+                adminSummary && (React.createElement("div", { className: "mt-4" },
+                    React.createElement("h3", { className: "text-lg font-semibold mb-2" }, "\u0E2A\u0E23\u0E38\u0E1B\u0E01\u0E32\u0E23\u0E25\u0E32\u0E02\u0E2D\u0E07\u0E1A\u0E38\u0E04\u0E25\u0E32\u0E01\u0E23\u0E17\u0E31\u0E49\u0E07\u0E2B\u0E21\u0E14"),
+                    React.createElement("div", { className: "overflow-x-auto border rounded-lg" },
+                        React.createElement("table", { className: "w-full min-w-max text-left text-sm text-gray-600" },
+                            React.createElement("thead", { className: "bg-gray-100" },
+                                React.createElement("tr", null,
+                                    React.createElement("th", { className: "px-6 py-3 font-medium" }, "\u0E0A\u0E37\u0E48\u0E2D-\u0E2A\u0E01\u0E38\u0E25"),
+                                    React.createElement("th", { className: "px-6 py-3 font-medium" }, "\u0E1B\u0E23\u0E30\u0E40\u0E20\u0E17\u0E01\u0E32\u0E23\u0E25\u0E32"),
+                                    React.createElement("th", { className: "px-6 py-3 font-medium text-right" }, "\u0E08\u0E33\u0E19\u0E27\u0E19\u0E04\u0E23\u0E31\u0E49\u0E07"),
+                                    React.createElement("th", { className: "px-6 py-3 font-medium text-right" }, "\u0E08\u0E33\u0E19\u0E27\u0E19\u0E27\u0E31\u0E19"))),
+                            React.createElement("tbody", null, Object.keys(adminSummary).length > 0 ? Object.entries(adminSummary).map(([userName, data]) => (React.createElement(React.Fragment, { key: userName },
+                                Object.entries(data.details).map(([type, stats], index) => (React.createElement("tr", { key: `${userName}-${type}`, className: "border-t" },
+                                    index === 0 && React.createElement("td", { rowSpan: Object.keys(data.details).length, className: "px-6 py-4 align-top font-semibold" }, userName),
+                                    React.createElement("td", { className: "px-6 py-4" }, type),
+                                    React.createElement("td", { className: "px-6 py-4 text-right" }, stats.count),
+                                    React.createElement("td", { className: "px-6 py-4 text-right" }, stats.days)))),
+                                React.createElement("tr", { className: "bg-gray-50 font-bold border-t-2 border-gray-200" },
+                                    React.createElement("td", { colSpan: 2, className: "px-6 py-2 text-right" },
+                                        "\u0E23\u0E27\u0E21\u0E02\u0E2D\u0E07 ",
+                                        userName),
+                                    React.createElement("td", { className: "px-6 py-2 text-right" }, data.total.count),
+                                    React.createElement("td", { className: "px-6 py-2 text-right" }, data.total.days))))) : (React.createElement("tr", null,
+                                React.createElement("td", { colSpan: 4, className: "text-center py-4" }, "\u0E44\u0E21\u0E48\u0E21\u0E35\u0E02\u0E49\u0E2D\u0E21\u0E39\u0E25\u0E01\u0E32\u0E23\u0E25\u0E32\u0E43\u0E19\u0E0A\u0E48\u0E27\u0E07\u0E27\u0E31\u0E19\u0E17\u0E35\u0E48\u0E40\u0E25\u0E37\u0E2D\u0E01"))))))))),
+            React.createElement("div", { className: "p-6 border-t bg-gray-50 flex justify-end" },
+                React.createElement("button", { type: "button", onClick: onClose, className: "px-4 py-2 bg-gray-200 text-gray-800 rounded-md hover:bg-gray-300 font-semibold" }, "\u0E1B\u0E34\u0E14")))));
+};
+
+// --- App Component ---
+const App = () => {
+    const [currentUser, setCurrentUser] = useState(null);
+    const [users, setUsers] = useState([]);
+    const [leaveTypes, setLeaveTypes] = useState([]);
+    const [leaveRequests, setLeaveRequests] = useState([]);
+    const [isFormOpen, setIsFormOpen] = useState(false);
+    const [requestToEdit, setRequestToEdit] = useState(null);
+    const [requestToView, setRequestToView] = useState(null);
+    const [isSummaryOpen, setIsSummaryOpen] = useState(false);
+    const [isLoading, setIsLoading] = useState(true);
+    const [error, setError] = useState(null);
+    const [loginError, setLoginError] = useState(null);
+    useEffect(() => {
+        const fetchData = async () => {
+            try {
+                setIsLoading(true);
+                setError(null);
+                const { users, leaveTypes, leaveRequests } = await getInitialData();
+                setUsers(users);
+                setLeaveTypes(leaveTypes);
+                setLeaveRequests(leaveRequests.sort((a, b) => new Date(b.submittedAt).getTime() - new Date(a.submittedAt).getTime()));
+            }
+            catch (err) {
+                setError('ไม่สามารถโหลดข้อมูลได้ กรุณาลองใหม่อีกครั้ง');
+                console.error(err);
+            }
+            finally {
+                setIsLoading(false);
+            }
+        };
+        fetchData();
+    }, []);
+    const handleLogin = async (userId, password) => {
+        try {
+            setIsLoading(true);
+            setLoginError(null);
+            const user = await login(userId, password);
+            setCurrentUser(user);
+        }
+        catch (err) {
+            setLoginError(err.message);
+        }
+        finally {
+            setIsLoading(false);
+        }
+    };
+    const handleLogout = () => {
+        setCurrentUser(null);
+    };
+    const openForm = (request) => {
+        setRequestToEdit(request || null);
+        setIsFormOpen(true);
+    };
+    const closeForm = () => {
+        setIsFormOpen(false);
+        setRequestToEdit(null);
+    };
+    const openDetails = (request) => {
+        setRequestToView(request);
+    };
+    const closeDetails = () => {
+        setRequestToView(null);
+    };
+    const handleSaveRequest = async (request) => {
+        try {
+            const isEditing = !!requestToEdit;
+            const savedRequest = isEditing
+                ? await updateLeaveRequest(request)
+                : await createLeaveRequest(request);
+            setLeaveRequests(prev => {
+                const newRequests = isEditing
+                    ? prev.map(r => r.id === savedRequest.id ? savedRequest : r)
+                    : [savedRequest, ...prev];
+                return newRequests.sort((a, b) => new Date(b.submittedAt).getTime() - new Date(a.submittedAt).getTime());
+            });
+        }
+        catch (error) {
+            alert('เกิดข้อผิดพลาดในการบันทึกข้อมูล');
+        }
+        closeForm();
+    };
+    const handleDeleteRequest = async (id) => {
+        if (window.confirm('คุณแน่ใจหรือไม่ว่าต้องการลบใบงานนี้?')) {
+            try {
+                await deleteLeaveRequest(id);
+                setLeaveRequests(leaveRequests.filter(r => r.id !== id));
+            }
+            catch (error) {
+                alert('เกิดข้อผิดพลาดในการลบข้อมูล');
+            }
+        }
+    };
+    const handleApproveRequest = async (id) => {
+        if (!currentUser || currentUser.role !== UserRole.ADMIN)
+            return;
+        const request = leaveRequests.find(r => r.id === id);
+        if (!request)
+            return;
+        const updatedRequest = {
+            ...request,
+            status: LeaveStatus.APPROVED,
+            approvedBy: currentUser.name,
+            approvedAt: new Date().toISOString()
+        };
+        try {
+            await updateLeaveRequest(updatedRequest);
+            setLeaveRequests(leaveRequests.map(r => r.id === id ? updatedRequest : r));
+        }
+        catch (error) {
+            alert('เกิดข้อผิดพลาดในการอนุมัติใบลา');
+        }
+    };
+    if (isLoading && users.length === 0) {
+        return React.createElement("div", { className: "min-h-screen flex items-center justify-center" }, "\u0E01\u0E33\u0E25\u0E31\u0E07\u0E42\u0E2B\u0E25\u0E14\u0E02\u0E49\u0E2D\u0E21\u0E39\u0E25...");
+    }
+    if (error) {
+        return React.createElement("div", { className: "min-h-screen flex items-center justify-center text-red-500" }, error);
+    }
+    if (!currentUser) {
+        return React.createElement(Login, { users: users, onLogin: handleLogin, isLoading: isLoading, error: loginError });
+    }
+    return (React.createElement("div", { className: "min-h-screen bg-gray-100 font-sarabun" },
+        React.createElement(Header, { currentUser: currentUser, onLogout: handleLogout }),
+        React.createElement("main", { className: "container mx-auto p-4 sm:p-6 lg:p-8" },
+            React.createElement("div", { className: "flex flex-wrap justify-between items-center gap-4 mb-6" },
+                React.createElement("div", null,
+                    React.createElement("h2", { className: "text-2xl font-bold text-gray-800" }, "\u0E41\u0E14\u0E0A\u0E1A\u0E2D\u0E23\u0E4C\u0E14"),
+                    React.createElement("p", { className: "text-gray-600" },
+                        "\u0E22\u0E34\u0E19\u0E14\u0E35\u0E15\u0E49\u0E2D\u0E19\u0E23\u0E31\u0E1A, ",
+                        currentUser.name)),
+                React.createElement("div", { className: "flex items-center space-x-2" },
+                    React.createElement("button", { onClick: () => setIsSummaryOpen(true), className: "px-4 py-2 bg-white border border-gray-300 text-gray-700 font-semibold rounded-lg shadow-sm hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-opacity-75 flex items-center" },
+                        React.createElement("svg", { xmlns: "http://www.w3.org/2000/svg", fill: "none", viewBox: "0 0 24 24", strokeWidth: 1.5, stroke: "currentColor", className: "w-5 h-5 mr-2" },
+                            React.createElement("path", { strokeLinecap: "round", strokeLinejoin: "round", d: "M3 13.125C3 12.504 3.504 12 4.125 12h2.25c.621 0 1.125.504 1.125 1.125v6.75C7.5 20.496 6.996 21 6.375 21h-2.25A1.125 1.125 0 013 19.875v-6.75zM9.75 8.625c0-.621.504-1.125 1.125-1.125h2.25c.621 0 1.125.504 1.125 1.125v11.25c0 .621-.504 1.125-1.125 1.125h-2.25a1.125 1.125 0 01-1.125-1.125V8.625zM16.5 4.125c0-.621.504-1.125 1.125-1.125h2.25C20.496 3 21 3.504 21 4.125v15.75c0 .621-.504 1.125-1.125 1.125h-2.25a1.125 1.125 0 01-1.125-1.125V4.125z" })),
+                        "\u0E14\u0E39\u0E2A\u0E23\u0E38\u0E1B\u0E01\u0E32\u0E23\u0E25\u0E32"),
+                    currentUser.role === UserRole.TEACHER && (React.createElement("button", { onClick: () => openForm(), className: "px-4 py-2 bg-blue-600 text-white font-semibold rounded-lg shadow-md hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-opacity-75 flex items-center" },
+                        React.createElement("svg", { xmlns: "http://www.w3.org/2000/svg", fill: "none", viewBox: "0 0 24 24", strokeWidth: 1.5, stroke: "currentColor", className: "w-5 h-5 mr-2" },
+                            React.createElement("path", { strokeLinecap: "round", strokeLinejoin: "round", d: "M12 4.5v15m7.5-7.5h-15" })),
+                        "\u0E22\u0E37\u0E48\u0E19\u0E43\u0E1A\u0E25\u0E32\u0E43\u0E2B\u0E21\u0E48")))),
+            React.createElement(SummaryCards, { requests: leaveRequests, currentUser: currentUser }),
+            React.createElement(LeaveRequestList, { requests: leaveRequests, currentUser: currentUser, onView: openDetails, onEdit: openForm, onDelete: handleDeleteRequest, onApprove: handleApproveRequest })),
+        isFormOpen && (React.createElement(LeaveRequestForm, { requestToEdit: requestToEdit, currentUser: currentUser, onSave: handleSaveRequest, onClose: closeForm, leaveTypes: leaveTypes })),
+        requestToView && (React.createElement(LeaveRequestDetails, { request: requestToView, currentUser: currentUser, onClose: closeDetails })),
+        isSummaryOpen && (React.createElement(LeaveSummary, { requests: leaveRequests, currentUser: currentUser, onClose: () => setIsSummaryOpen(false), leaveTypes: leaveTypes }))));
+};
+
+// --- Mount Application ---
+const rootElement = document.getElementById('root');
+if (!rootElement) {
+    throw new Error("Could not find root element to mount to");
+}
+const root = ReactDOM.createRoot(rootElement);
+root.render(React.createElement(React.StrictMode, null, React.createElement(App, null)));
+
+    </script>
   </body>
 </html>
